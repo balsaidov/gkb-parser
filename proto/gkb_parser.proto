@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+package gkb_parser;
+
+service GkbParser {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Parse(ParseRequest) returns (ParseResponse);
+  rpc ParseSummary(ParseSummaryRequest) returns (ParseSummaryResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}
+
+message ParseRequest {
+  bytes pdf_data = 1;
+}
+
+message ParseResponse {
+  GkbReport report = 1;
+}
+
+message ParseSummaryRequest {
+  bytes pdf_data = 1;
+}
+
+message ParseSummaryResponse {
+  string json_summary = 1;
+}
+
+// --- Полная модель отчёта ГКБ ---
+
+message Address {
+  optional string country = 1;
+  optional string region = 2;
+  optional string district = 3;
+  optional string city = 4;
+  optional string street = 5;
+  optional string house_apartment = 6;
+  optional string postal_code = 7;
+}
+
+message CreditApplication {
+  optional string creditor = 1;
+  optional string bin = 2;
+  optional string application_number = 3;
+  optional string application_date = 4;
+  optional double amount = 5;
+  optional string purpose = 6;
+  optional string object = 7;
+}
+
+message ObligationSummary {
+  optional int32 count = 1;
+  optional string subject_role = 2;
+  optional double total_contract_amount = 3;
+  optional double total_overdue_amount = 4;
+  optional double total_remaining_debt = 5;
+  optional string financing_types = 6;
+  optional string contract_statuses = 7;
+}
+
+message Collateral {
+  optional string type = 1;
+  optional double value = 2;
+  optional string valuation_type = 3;
+}
+
+message ParentContract {
+  optional string provider = 1;
+  optional string provider_bin = 2;
+  optional string contract_number = 3;
+  optional string contract_date = 4;
+}
+
+message RelatedSubject {
+  optional string role = 1;
+  optional string name = 2;
+  optional string iin_bin = 3;
+  optional string document_type = 4;
+  optional string document_number = 5;
+}
+
+message OverdueMonth {
+  int32 month = 1;
+  optional int32 overdue_days = 2;
+  optional double overdue_amount = 3;
+}
+
+message OverdueYear {
+  int32 year = 1;
+  repeated OverdueMonth months = 2;
+}
+
+message Cession {
+  optional string assignee_name = 1;
+  optional string assignee_bin = 2;
+  optional double assigned_amount = 3;
+  optional string assignment_date = 4;
+}
+
+message DebtCollection {
+  optional string basis = 1;
+  optional string document_date = 2;
+  optional string cancellation_date = 3;
+}
+
+message Obligation {
+  optional string subject_role = 1;
+  string creditor = 2;
+  optional string bin = 3;
+  optional string credit_purpose = 4;
+  optional string credit_object = 5;
+  optional string financing_type = 6;
+  optional string contract_status = 7;
+  optional string condition_change = 8;
+  optional int32 total_installments = 9;
+  optional string contract_type = 10;
+  optional string contract_phase = 11;
+  optional string contract_code = 12;
+  string contract_number = 13;
+  optional string application_date = 14;
+  optional string start_date = 15;
+  optional string end_date = 16;
+  optional string actual_issue_date = 17;
+  optional string payment_frequency = 18;
+  optional double nominal_rate = 19;
+  optional double effective_rate = 20;
+  optional double total_amount = 21;
+  optional double monthly_payment = 22;
+  optional double overdue_amount = 23;
+  optional double upcoming_payments = 24;
+  optional int32 overdue_days = 25;
+  optional int32 outstanding_installments = 26;
+  optional double penalty = 27;
+  optional double fine = 28;
+  optional string last_payment_date = 29;
+  optional double last_payment_amount = 30;
+  repeated Collateral collaterals = 31;
+  optional string principal_grace_period = 32;
+  optional string interest_grace_period = 33;
+  optional int32 prolongation_count = 34;
+  optional string prolongation_date = 35;
+  optional Cession cession = 36;
+  repeated ParentContract parent_contracts = 37;
+  optional string debt_settlement = 38;
+  optional DebtCollection debt_collection = 39;
+  repeated RelatedSubject related_subjects = 40;
+  repeated OverdueYear overdue_history = 41;
+  optional int32 max_overdue_days = 42;
+  optional double max_overdue_amount = 43;
+}
+
+message Bankruptcy {
+  optional string recognition_date = 1;
+  optional string completion_date = 2;
+  optional string data_date = 3;
+}
+
+message GamblingPayments {
+  optional int32 total_count = 1;
+  optional double total_amount = 2;
+}
+
+message CreditApplications {
+  optional int32 last_30_days_count = 1;
+  repeated CreditApplication details = 2;
+}
+
+message ObligationsSummary {
+  optional ObligationSummary active = 1;
+  optional ObligationSummary completed = 2;
+}
+
+message IdentityDocument {
+  optional string type = 1;
+  optional string number = 2;
+  optional string issue_date = 3;
+  optional string expiry_date = 4;
+  optional string full_name = 5;
+  optional string bureau_received_date = 6;
+}
+
+message CreditQuery {
+  optional string date_time = 1;
+  optional string report_type = 2;
+  optional string recipient_name = 3;
+  optional string recipient_bin = 4;
+}
+
+message CreditQueries {
+  optional int32 last_7_days = 1;
+  optional int32 last_30_days = 2;
+  optional int32 last_90_days = 3;
+  optional int32 last_year = 4;
+  repeated CreditQuery details = 5;
+}
+
+message MilitaryService {
+  optional string status = 1;
+  optional string start_date = 2;
+}
+
+message GkbReport {
+  optional int32 report_number = 1;
+  optional string report_date = 2;
+  optional string report_time = 3;
+  optional string report_type = 4;
+  string client_name = 5;
+  optional string last_name = 6;
+  optional string first_name = 7;
+  optional string middle_name = 8;
+  optional string iin = 9;
+  optional string birth_date = 10;
+  optional string citizenship = 11;
+  optional string gender = 12;
+  optional string phone_mobile = 13;
+  optional string phone_work = 14;
+  optional string phone_home = 15;
+  optional string email = 16;
+  optional bool credit_ban = 17;
+  optional string credit_ban_start_date = 18;
+  optional string credit_ban_end_date = 19;
+  optional Address residential_address = 20;
+  optional Address registration_address = 21;
+  optional Bankruptcy bankruptcy = 22;
+  optional GamblingPayments gambling_payments = 23;
+  optional CreditApplications credit_applications = 24;
+  optional ObligationsSummary obligations_summary = 25;
+  repeated Obligation active_obligations = 26;
+  repeated Obligation completed_obligations = 27;
+  repeated IdentityDocument identity_documents = 28;
+  optional MilitaryService military_service = 29;
+  optional CreditQueries credit_queries = 30;
+}

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+*.pdf
+samples_short/
+.claude/
+
+.DS_Store
+results/
+Dockerfile
+docker-compose.yml
