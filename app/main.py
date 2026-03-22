@@ -1,14 +1,16 @@
-"""FastAPI микросервис для парсинга отчётов ГКБ."""
-from fastapi import FastAPI, UploadFile, File, HTTPException
+"""FastAPI микросервис для парсинга отчётов ГКБ и цен arbuz.kz."""
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.parser import parse_gkb_report
 from app.models import GkbReport
+from app.arbuz.parser import ArbuzParser
+from app.arbuz.models import ArbuzPriceResult
 
 app = FastAPI(
     title="GKB Parser",
-    description="Микросервис для парсинга персональных кредитных отчётов ГКБ (PDF → JSON)",
-    version="1.0.0",
+    description="Микросервис для парсинга кредитных отчётов ГКБ и розничных цен Казахстана",
+    version="1.1.0",
 )
 
 
@@ -83,4 +85,41 @@ async def parse_pdf_summary(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=500,
             detail=f"Ошибка парсинга: {type(e).__name__}: {str(e)}",
+        )
+
+
+# ─── Arbuz.kz: розничные цены ───────────────────────────────────────────
+
+
+@app.get("/arbuz/prices", response_model=list[ArbuzPriceResult])
+async def arbuz_basic_prices(city: str = Query("almaty", enum=["almaty", "astana"])):
+    """
+    Получить цены на 10 базовых продуктов с arbuz.kz.
+
+    Товары: молоко, хлеб, яйца, сахар, масло подсолнечное,
+    мука, рис, курица, картофель, гречка.
+    """
+    parser = ArbuzParser(city=city)
+    try:
+        return await parser.fetch_basic_prices()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка парсинга arbuz.kz: {type(e).__name__}: {str(e)}",
+        )
+
+
+@app.get("/arbuz/search", response_model=ArbuzPriceResult)
+async def arbuz_search(
+    q: str = Query(..., min_length=1, description="Название товара"),
+    city: str = Query("almaty", enum=["almaty", "astana"]),
+):
+    """Поиск товара и его цены на arbuz.kz."""
+    parser = ArbuzParser(city=city)
+    try:
+        return await parser.fetch_product_prices(query=q)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка поиска arbuz.kz: {type(e).__name__}: {str(e)}",
         )
