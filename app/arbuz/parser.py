@@ -1,8 +1,6 @@
 """Парсер цен с arbuz.kz.
 
-Поддерживает два подхода:
-1. Парсинг HTML страниц каталога (SSR от Nuxt 3)
-2. Поиск товаров через поисковую страницу
+Парсит товары из категорий каталога arbuz.kz и сохраняет результаты.
 
 Использование:
     from app.arbuz.parser import ArbuzParser
@@ -11,11 +9,12 @@
     results = await parser.fetch_basic_prices()
 """
 
+import copy
 import json
 import re
 import logging
+from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
@@ -26,28 +25,31 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://arbuz.kz"
 
-# 10 базовых товаров с их категориями на arbuz.kz
-BASIC_PRODUCTS = [
-    {"query": "Молоко", "category_id": 20050, "category_slug": "moloko"},
-    {"query": "Хлеб", "category_id": 20144, "category_slug": "hleb"},
-    {"query": "Яйца", "category_id": 19986, "category_slug": "molochnye_produkty_yaica"},
-    {"query": "Сахар", "category_id": 224542, "category_slug": "sahar"},
-    {"query": "Масло подсолнечное", "category_id": 25401, "category_slug": "rastitelnye_masla"},
-    {"query": "Мука", "category_id": 202280, "category_slug": "pshenichnaya_muka"},
-    {"query": "Рис", "category_id": 19666, "category_slug": "krupa"},
-    {"query": "Курица", "category_id": 19914, "category_slug": "kurica_zamorozhennaya"},
-    {"query": "Картофель", "category_id": 225178, "category_slug": "ovoshi"},
-    {"query": "Гречка", "category_id": 224398, "category_slug": "krupy_bobovye"},
+# Базовые категории товаров на arbuz.kz
+BASIC_CATEGORIES = [
+    {"query": "Молоко", "category_id": 20050, "slug": "moloko"},
+    {"query": "Хлеб", "category_id": 20144, "slug": "hleb"},
+    {"query": "Яйца", "category_id": 20114, "slug": "yaica"},
+    {"query": "Сахар", "category_id": 224542, "slug": "sahar"},
+    {"query": "Масло подсолнечное", "category_id": 19735, "slug": "podsolnechnoe_maslo"},
+    {"query": "Мука", "category_id": 202280, "slug": "pshenichnaya_muka"},
+    {"query": "Рис", "category_id": 202281, "slug": "ris"},
+    {"query": "Курица", "category_id": 225137, "slug": "kurica_ohlazhd_nnaya"},
+    {"query": "Картофель", "category_id": 225178, "slug": "ovoshi"},
+    {"query": "Гречка", "category_id": 224782, "slug": "grechka"},
+    {"query": "Газировка", "category_id": 20784, "slug": "gazirovka_i_energetiki"},
 ]
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
+SAVED_PRODUCTS_FILE = Path(__file__).parent.parent.parent / "data" / "products.json"
 
 
 class ArbuzParser:
@@ -70,37 +72,12 @@ class ArbuzParser:
                 logger.error("Ошибка загрузки %s: %s", url, e)
                 return None
 
-    def _parse_nuxt_payload(self, html: str) -> Optional[list[dict]]:
-        """Извлечь данные товаров из Nuxt 3 SSR payload."""
-        # Nuxt 3 встраивает данные в <script> теги
-        # Ищем паттерны: window.__NUXT__, __NUXT_DATA__, или inline JSON
-        patterns = [
-            r'window\.__NUXT__\s*=\s*({.+?})\s*;?\s*</script>',
-            r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.+?)</script>',
-            r'"products"\s*:\s*(\[.+?\])\s*[,}]',
-            r'"items"\s*:\s*(\[.+?\])\s*[,}]',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, html, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group(1))
-                    if isinstance(data, list):
-                        return data
-                    # Если это объект, ищем вложенный список продуктов
-                    for key in ("products", "items", "data", "catalog"):
-                        if key in data and isinstance(data[key], list):
-                            return data[key]
-                except (json.JSONDecodeError, TypeError):
-                    continue
-        return None
-
     def _parse_products_from_html(self, html: str, query: str = "") -> list[ArbuzProduct]:
         """Извлечь товары из HTML разметки страницы каталога."""
         soup = BeautifulSoup(html, "html.parser")
         products = []
 
-        # Пробуем JSON-LD structured data
+        # 1. JSON-LD structured data
         for script in soup.find_all("script", type="application/ld+json"):
             try:
                 ld_data = json.loads(script.string)
@@ -120,13 +97,27 @@ class ArbuzParser:
                                     available=offers.get("availability", "")
                                     == "https://schema.org/InStock",
                                 ))
+                # Один товар (страница товара)
+                if isinstance(ld_data, dict) and ld_data.get("@type") == "Product":
+                    offers = ld_data.get("offers", {})
+                    price = float(offers.get("price", 0))
+                    if price > 0:
+                        products.append(ArbuzProduct(
+                            id=_extract_id_from_url(ld_data.get("url", ld_data.get("@id", ""))),
+                            name=ld_data.get("name", ""),
+                            price=price,
+                            image_url=ld_data.get("image"),
+                            url=ld_data.get("url"),
+                            available=offers.get("availability", "")
+                            == "https://schema.org/InStock",
+                        ))
             except (json.JSONDecodeError, TypeError, ValueError):
                 continue
 
         if products:
             return self._filter_by_query(products, query)
 
-        # Пробуем Nuxt SSR payload
+        # 2. Nuxt SSR payload
         nuxt_products = self._parse_nuxt_payload(html)
         if nuxt_products:
             for item in nuxt_products:
@@ -148,8 +139,7 @@ class ArbuzParser:
         if products:
             return self._filter_by_query(products, query)
 
-        # Fallback: парсим HTML-элементы карточек товаров
-        # Типичная структура Vue/Nuxt магазина: карточки с data-атрибутами или классами
+        # 3. HTML-карточки товаров
         card_selectors = [
             "div.product-card",
             "div.catalog-item",
@@ -170,6 +160,28 @@ class ArbuzParser:
 
         return self._filter_by_query(products, query)
 
+    def _parse_nuxt_payload(self, html: str) -> Optional[list[dict]]:
+        """Извлечь данные товаров из Nuxt 3 SSR payload."""
+        patterns = [
+            r'window\.__NUXT__\s*=\s*({.+?})\s*;?\s*</script>',
+            r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.+?)</script>',
+            r'"products"\s*:\s*(\[.+?\])\s*[,}]',
+            r'"items"\s*:\s*(\[.+?\])\s*[,}]',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group(1))
+                    if isinstance(data, list):
+                        return data
+                    for key in ("products", "items", "data", "catalog"):
+                        if key in data and isinstance(data[key], list):
+                            return data[key]
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return None
+
     def _parse_product_card(self, card) -> Optional[ArbuzProduct]:
         """Извлечь данные товара из HTML-карточки."""
         name = ""
@@ -188,23 +200,34 @@ class ArbuzParser:
                 if name:
                     break
 
-        # Цена
-        for sel in [".product-price", ".price", "[class*='price']",
-                    "span[class*='price']", "[class*='cost']"]:
-            el = card.select_one(sel)
-            if el:
-                price_text = el.get_text(strip=True)
-                price = _parse_price(price_text)
-                if price > 0:
-                    break
-
-        # Старая цена (скидка)
+        # Старая цена — извлекаем ПЕРВОЙ
         for sel in [".old-price", "[class*='old']", "[class*='discount']",
                     "s", "del"]:
             el = card.select_one(sel)
             if el:
                 old_price = _parse_price(el.get_text(strip=True))
                 break
+
+        # Убираем элементы старой цены из копии, чтобы не склеивались
+        card_clean = copy.copy(card)
+        for old_el in card_clean.find_all(
+            lambda tag: tag.name in ("s", "del")
+            or (tag.get("class") and any(
+                "old" in c or "discount" in c
+                for c in tag.get("class", [])
+            ))
+        ):
+            old_el.decompose()
+
+        # Цена (из очищенной карточки)
+        for sel in [".product-price", ".price", "[class*='price']",
+                    "span[class*='price']", "[class*='cost']"]:
+            el = card_clean.select_one(sel)
+            if el:
+                price_text = el.get_text(strip=True)
+                price = _parse_price(price_text)
+                if price > 0:
+                    break
 
         # Картинка
         img = card.select_one("img")
@@ -245,86 +268,80 @@ class ArbuzParser:
     async def fetch_category(
         self,
         category_id: int,
-        category_slug: str,
+        slug: str,
         query: str = "",
-        limit: int = 50,
-        page: int = 1,
     ) -> list[ArbuzProduct]:
         """Загрузить товары из категории."""
-        url = (
-            f"{self.base_catalog_url}/cat/{category_id}-{category_slug}"
-            f"?limit={limit}&page={page}"
-        )
+        url = f"{self.base_catalog_url}/cat/{category_id}-{slug}"
         logger.info("Загрузка категории: %s", url)
         html = await self._fetch_page(url)
         if not html:
             return []
         return self._parse_products_from_html(html, query)
 
-    async def search(self, query: str) -> list[ArbuzProduct]:
-        """Поиск товаров через поисковую страницу."""
-        encoded = quote(query)
-        url = f"{BASE_URL}/ru/{self.city}/search?q={encoded}"
-        logger.info("Поиск: %s", url)
-        html = await self._fetch_page(url)
-        if not html:
-            return []
-        return self._parse_products_from_html(html, query)
-
-    async def fetch_product_prices(
-        self,
-        query: str,
-        category_id: Optional[int] = None,
-        category_slug: Optional[str] = None,
-    ) -> ArbuzPriceResult:
-        """Получить цены на конкретный товар."""
-        products = []
-
-        # Сначала пробуем категорию, если указана
-        if category_id and category_slug:
+    async def fetch_basic_prices(self) -> list[ArbuzPriceResult]:
+        """Получить цены на базовые товары по категориям."""
+        results = []
+        for cat in BASIC_CATEGORIES:
             products = await self.fetch_category(
-                category_id, category_slug, query
+                category_id=cat["category_id"],
+                slug=cat["slug"],
             )
 
-        # Если мало результатов — дополняем поиском
-        if len(products) < 3:
-            search_results = await self.search(query)
-            existing_ids = {p.id for p in products}
-            for p in search_results:
-                if p.id not in existing_ids:
-                    products.append(p)
+            cheapest = min(products, key=lambda p: p.price) if products else None
+            avg_price = (
+                sum(p.price for p in products) / len(products) if products else None
+            )
 
-        cheapest = min(products, key=lambda p: p.price) if products else None
-        avg_price = (
-            sum(p.price for p in products) / len(products) if products else None
-        )
-
-        return ArbuzPriceResult(
-            query=query,
-            category=category_slug,
-            city=self.city,
-            products=products,
-            cheapest=cheapest,
-            average_price=round(avg_price, 2) if avg_price else None,
-        )
-
-    async def fetch_basic_prices(self) -> list[ArbuzPriceResult]:
-        """Получить цены на 10 базовых товаров."""
-        results = []
-        for item in BASIC_PRODUCTS:
-            result = await self.fetch_product_prices(
-                query=item["query"],
-                category_id=item["category_id"],
-                category_slug=item["category_slug"],
+            result = ArbuzPriceResult(
+                query=cat["query"],
+                category=cat["slug"],
+                city=self.city,
+                products=products,
+                cheapest=cheapest,
+                average_price=round(avg_price, 2) if avg_price else None,
             )
             results.append(result)
+
             logger.info(
                 "%s: найдено %d товаров, мин. цена: %s ₸",
-                item["query"],
-                len(result.products),
-                result.cheapest.price if result.cheapest else "—",
+                cat["query"],
+                len(products),
+                cheapest.price if cheapest else "—",
             )
+
         return results
+
+    def save_products(self, results: list[ArbuzPriceResult]) -> Path:
+        """Сохранить найденные товары в JSON файл."""
+        SAVED_PRODUCTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        data = []
+        for r in results:
+            for p in r.products:
+                data.append({
+                    "category": r.query,
+                    "id": p.id,
+                    "name": p.name,
+                    "price": p.price,
+                    "old_price": p.old_price,
+                    "url": p.url,
+                    "image_url": p.image_url,
+                    "available": p.available,
+                })
+
+        SAVED_PRODUCTS_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Сохранено %d товаров в %s", len(data), SAVED_PRODUCTS_FILE)
+        return SAVED_PRODUCTS_FILE
+
+    def load_saved_products(self) -> list[dict]:
+        """Загрузить ранее сохранённые товары."""
+        if not SAVED_PRODUCTS_FILE.exists():
+            return []
+        return json.loads(SAVED_PRODUCTS_FILE.read_text(encoding="utf-8"))
 
 
 def _parse_price(text: str) -> float:
@@ -333,12 +350,10 @@ def _parse_price(text: str) -> float:
         return 0.0
     cleaned = re.sub(r"[^\d.,]", "", text)
     cleaned = cleaned.replace(",", ".")
-    # Убираем точки-разделители тысяч (например "1.200" = 1200)
     parts = cleaned.split(".")
     if len(parts) > 2:
         cleaned = "".join(parts[:-1]) + "." + parts[-1]
     elif len(parts) == 2 and len(parts[1]) == 3:
-        # Скорее всего разделитель тысяч, не десятичная часть
         cleaned = "".join(parts)
     try:
         return float(cleaned)
